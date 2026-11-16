@@ -1,0 +1,73 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Line-stop API. Workstations report floor events; events are stored per site.
+
+Resources:
+
+  # One table for every site. site_id is the partition key, so each site's events
+  # are stored together and can be read on their own. created_at sorts them by time.
+  EventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST   # on-demand: pay per request, nothing billed hourly
+      AttributeDefinitions:
+        - AttributeName: site_id
+          AttributeType: S
+        - AttributeName: created_at
+          AttributeType: S
+      KeySchema:
+        - AttributeName: site_id
+          KeyType: HASH
+        - AttributeName: created_at
+          KeyType: RANGE
+
+  EventsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Runtime: python3.12
+      Handler: app.handler
+      CodeUri: src/
+      Architectures: [arm64]
+      MemorySize: 128
+      Timeout: 10
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref EventsTable
+      # Least privilege: write one item and query, on this one table only.
+      # (SAM also attaches AWSLambdaBasicExecutionRole so the function can write logs.)
+      Policies:
+        - Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:Query
+              Resource: !GetAtt EventsTable.Arn
+      Events:
+        PostEvent:
+          Type: HttpApi
+          Properties:
+            Path: /events
+            Method: POST
+        ListEvents:
+          Type: HttpApi
+          Properties:
+            Path: /events
+            Method: GET
+
+  # Created here, not by Lambda, so logs expire after 7 days and the log group
+  # is deleted with the stack.
+  EventsFunctionLogs:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/${EventsFunction}
+      RetentionInDays: 7
+
+Outputs:
+  ApiUrl:
+    Description: Base URL of the HTTP API
+    Value: !Sub https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com
+  TableName:
+    Value: !Ref EventsTable
+  FunctionName:
+    Value: !Ref EventsFunction
